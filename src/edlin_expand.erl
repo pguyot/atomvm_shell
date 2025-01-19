@@ -27,28 +27,50 @@ expand(ReverseStr, _Options) ->
             {no, [], []};
         [FuncStr, ModuleStr] ->
             try
-                Module = list_to_existing_atom(lists:reverse(ModuleStr)),
-                FuncPrefix = lists:reverse(FuncStr),
-                FuncPrefixLen = length(FuncPrefix),
-                ResultExpand = lists:foldl(fun({Func, _Arity}, {Longest, Candidates} = Acc) ->
-                    FuncString = atom_to_list(Func),
-                    FuncStringPrefix = lists:sublist(FuncString, FuncPrefixLen),
-                    if FuncStringPrefix =:= FuncPrefix ->
-                        case Longest of
-                            undefined -> {FuncString, [FuncString]};
-                            _ ->
-                                {longest_prefix(Longest, FuncString), [FuncString | Candidates]}
+                Module = list_to_atom(lists:reverse(ModuleStr)),
+                case code:ensure_loaded(Module) of
+                    {module, Module} ->
+                        FuncPrefix = lists:reverse(FuncStr),
+                        FuncPrefixLen = length(FuncPrefix),
+                        ResultExpand = lists:foldl(
+                            fun({Func, _Arity}, {Longest, Candidates} = Acc) ->
+                                FuncString = atom_to_list(Func),
+                                FuncStringPrefix = lists:sublist(FuncString, FuncPrefixLen),
+                                if
+                                    FuncStringPrefix =:= FuncPrefix ->
+                                        case Longest of
+                                            undefined ->
+                                                {FuncString, [FuncString]};
+                                            _ ->
+                                                {longest_prefix(Longest, FuncString), [
+                                                    FuncString | Candidates
+                                                ]}
+                                        end;
+                                    true ->
+                                        Acc
+                                end
+                            end,
+                            {undefined, []},
+                            Module:module_info(exports)
+                        ),
+                        case ResultExpand of
+                            {undefined, _} ->
+                                {no, [], []};
+                            {Prefix, Candidates} ->
+                                {yes, lists:nthtail(FuncPrefixLen, Prefix), [
+                                    #{
+                                        options => [highlight_all],
+                                        title => "functions",
+                                        elems => [{Func, [{ending, "("}]} || Func <- Candidates]
+                                    }
+                                ]}
                         end;
-                    true ->
-                        Acc
-                    end
-                end, {undefined, []}, Module:module_info(exports)),
-                case ResultExpand of
-                    {undefined, _} -> {no, [], []};
-                    {Prefix, Candidates} -> {yes, lists:nthtail(FuncPrefixLen, Prefix), [#{options => [highlight_all], title => "functions", elems => [{Func, [{ending, "("}]} || Func <- Candidates]}]}
+                    {error, _} ->
+                        {no, [], []}
                 end
-            catch error:badarg ->
-                {no, [], []}
+            catch
+                _:_ ->
+                    {no, [], []}
             end
     end.
 
@@ -57,6 +79,5 @@ longest_prefix(Str1, Str2) ->
 
 longest_prefix([C | T1], [C | T2], Acc) ->
     longest_prefix(T1, T2, [C | Acc]);
-longest_prefix(_Str1, _Str2, Acc) -> lists:reverse(Acc).
-
-    
+longest_prefix(_Str1, _Str2, Acc) ->
+    lists:reverse(Acc).
