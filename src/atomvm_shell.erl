@@ -20,34 +20,92 @@
 
 -module(atomvm_shell).
 
+-include_lib("kernel/include/logger.hrl").
+
 -export([start/0]).
 
+-define(LOG_CFG, info).
+
 start() ->
-    Creds = maps:get(sta, config:get()),
-    case network:wait_for_sta(Creds, 30000) of
-        {ok, {Address, _Netmask, _Gateway}} ->
-            distribution_start(Address);
-        Error ->
-            io:format("An error occurred starting network: ~p~n", [Error])
+    {ok, _} = logger_manager:start_link(#{log_level => ?LOG_CFG}),
+    STAcfg = maps:get(sta, config:get()),
+    Start = self(),
+    NetworkCfg = [
+        {sta,
+            lists:flatten([
+                {got_ip, fun(IpInfo) -> Start ! IpInfo end}
+                | STAcfg
+            ])},
+        {sntp,
+            lists:flatten([
+                {synchronized, fun(_) -> logger:notice("Time synchronized by SNTP.") end}
+                | maps:get(sntp, config:get(), [])
+            ])}
+    ],
+    logger:info("Starting network with config: ~p", [sanitize_netcfg(NetworkCfg)]),
+    case network:start(NetworkCfg) of
+        {ok, _} ->
+            ok;
+        {error, Reason} ->
+            ?LOG_ERROR("An error occurred starting network: ~p", [Reason]),
+            error(Reason);
+        Other ->
+            ?LOG_ERROR("An error occurred starting network: ~p", [Other]),
+            error(Other)
+    end,
+
+    IP =
+        receive
+            {A, _M, _G} = _IpInfo -> A
+        after 30_000 ->
+            ?LOG_ERROR("No network after 30 seconds. Aborting!"),
+            error(no_network)
+        end,
+    Hostname = proplists:get_value(dhcp_hostname, STAcfg),
+    case Hostname of
+        undefined ->
+            ?LOG_DEBUG("Starting distribution with IP address: ~p", [IP]),
+            distribution_start(IP);
+        _ ->
+            ?LOG_DEBUG("Starting distribution with hostname ~p", [Hostname]),
+            distribution_start(Hostname)
     end.
 
-distribution_start(Address) ->
+distribution_start(NameOrIP) ->
     {ok, _EPMDPid} = epmd:start_link([]),
     {ok, _KernelPid} = kernel:start(normal, []),
-    {X, Y, Z, T} = Address,
     NodeName = maps:get(node_name, config:get()),
     Cookie = maps:get(cookie, config:get()),
-    Node = list_to_atom(lists:flatten(io_lib:format("~s@~B.~B.~B.~B", [NodeName, X, Y, Z, T]))),
+    Node = mk_node(NodeName, NameOrIP),
     {ok, _NetKernelPid} = net_kernel:start(Node, #{name_domain => longnames}),
-    io:format("Distribution was started\n"),
-    io:format("Node is ~p\n", [node()]),
+    logger:notice("Distribution was started"),
+    logger:notice("Node is ~p", [node()]),
     net_kernel:set_cookie(Cookie),
-    io:format("Cookie is ~s\n", [net_kernel:get_cookie()]),
+    logger:notice("Cookie is ~s", [net_kernel:get_cookie()]),
     register(main, self()),
-    io:format("To connect to shell, run:\n"),
-    io:format("erl -remsh ~s -setcookie ~s\n", [Node, Cookie]),
-    io:format("To stop program, this process is called 'main' and can be stopped from the shell with:\n"),
-    io:format("main ! quit.\n"),
+    io:format("\n\tTo connect to shell, run:\n"),
+    io:format("\terl -remsh ~s -setcookie ~s\n", [Node, Cookie]),
+    io:format(
+        "\tTo stop program, this process is called 'main' and can be stopped from the shell with:\n"
+    ),
+    io:format("\tmain ! quit.\n\n"),
     receive
         quit -> ok
     end.
+
+mk_node(NodeName, NameOrIP) when is_list(NameOrIP) ->
+    list_to_atom(lists:flatten(io_lib:format("~s@~s", [NodeName, NameOrIP])));
+mk_node(NodeName, NameOrIP) when is_tuple(NameOrIP) ->
+    {X, Y, Z, T} = NameOrIP,
+    list_to_atom(lists:flatten(io_lib:format("~s@~B.~B.~B.~B", [NodeName, X, Y, Z, T])));
+mk_node(_NodeName, NameOrIP) ->
+    ?LOG_ERROR("Fatal error, ~p is not a valid ip() or hostname charlist()", [NameOrIP]),
+    error({invalid, NameOrIP}).
+
+sanitize_netcfg(NetworkCfg) ->
+    Sta = proplists:get_value(sta, NetworkCfg),
+    SafeSTA = lists:flatten([proplists:delete(psk, Sta), {psk, "********"}]),
+    Tlist = proplists:delete(sta, NetworkCfg),
+    Sanitized = [{sta, lists:flatten([SafeSTA | Tlist])}],
+    ?LOG_DEBUG("~n\tConfig: ~p~n\tSanitized: ~p", [NetworkCfg, Sanitized]),
+    Sanitized.
