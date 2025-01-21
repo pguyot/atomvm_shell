@@ -28,5 +28,10 @@ get() ->
         sta => [
             {ssid, "my_sta_ssid"},
             {psk, "my_sta_psk"}
+            %% uncomment below to use hostname
+           % ,{dhcp_hostname, "device_name.fqdn"}
+        ],
+        sntp => [
+            {host, "pool.ntp.org"}
         ]
     }.
