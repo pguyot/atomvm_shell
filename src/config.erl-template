@@ -33,5 +33,8 @@ get() ->
         ],
         sntp => [
             {host, "pool.ntp.org"}
+        ],
+        mdns => [
+            {hostname, "atomvm"}
         ]
     }.
