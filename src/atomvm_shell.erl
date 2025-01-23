@@ -29,8 +29,9 @@
 start() ->
     {ok, _} = logger_manager:start_link(#{log_level => ?LOG_CFG}),
     STAcfg = maps:get(sta, config:get()),
+    MDNSCfg = maps:get(mdns, config:get(), []),
     Start = self(),
-    NetworkCfg = [
+    NetworkCfg0 = [
         {sta,
             lists:flatten([
                 {got_ip, fun(IpInfo) -> Start ! IpInfo end}
@@ -42,6 +43,11 @@ start() ->
                 | maps:get(sntp, config:get(), [])
             ])}
     ],
+    NetworkCfg =
+        case MDNSCfg of
+            [] -> NetworkCfg0;
+            _ -> [{mdns, MDNSCfg} | NetworkCfg0]
+        end,
     logger:info("Starting network with config: ~p", [sanitize_netcfg(NetworkCfg)]),
     case network:start(NetworkCfg) of
         {ok, _} ->
@@ -61,22 +67,23 @@ start() ->
             ?LOG_ERROR("No network after 30 seconds. Aborting!"),
             error(no_network)
         end,
-    Hostname = proplists:get_value(dhcp_hostname, STAcfg),
-    case Hostname of
-        undefined ->
-            ?LOG_DEBUG("Starting distribution with IP address: ~p", [IP]),
-            distribution_start(IP);
-        _ ->
-            ?LOG_DEBUG("Starting distribution with hostname ~p", [Hostname]),
-            distribution_start(Hostname)
-    end.
+    DHCPHostname = proplists:get_value(dhcp_hostname, STAcfg),
+    MDNSHostname = proplists:get_value(hostname, MDNSCfg),
+    Hostname =
+        if
+            DHCPHostname =/= undefined -> DHCPHostname;
+            MDNSHostname =/= undefined -> list_to_binary([MDNSHostname, ".local"]);
+            true -> IP
+        end,
+    ?LOG_DEBUG("Starting distribution with hostname address: ~p", [Hostname]),
+    distribution_start(Hostname).
 
-distribution_start(NameOrIP) ->
+distribution_start(Hostname) ->
     {ok, _EPMDPid} = epmd:start_link([]),
     {ok, _KernelPid} = kernel:start(normal, []),
     NodeName = maps:get(node_name, config:get()),
     Cookie = maps:get(cookie, config:get()),
-    Node = mk_node(NodeName, NameOrIP),
+    Node = mk_node(NodeName, Hostname),
     {ok, _NetKernelPid} = net_kernel:start(Node, #{name_domain => longnames}),
     logger:notice("Distribution was started"),
     logger:notice("Node is ~p", [node()]),
@@ -95,11 +102,13 @@ distribution_start(NameOrIP) ->
 
 mk_node(NodeName, NameOrIP) when is_list(NameOrIP) ->
     list_to_atom(lists:flatten(io_lib:format("~s@~s", [NodeName, NameOrIP])));
+mk_node(NodeName, NameOrIP) when is_binary(NameOrIP) ->
+    list_to_atom(lists:flatten(io_lib:format("~s@~s", [NodeName, NameOrIP])));
 mk_node(NodeName, NameOrIP) when is_tuple(NameOrIP) ->
     {X, Y, Z, T} = NameOrIP,
     list_to_atom(lists:flatten(io_lib:format("~s@~B.~B.~B.~B", [NodeName, X, Y, Z, T])));
 mk_node(_NodeName, NameOrIP) ->
-    ?LOG_ERROR("Fatal error, ~p is not a valid ip() or hostname charlist()", [NameOrIP]),
+    ?LOG_ERROR("Fatal error, ~p is not a valid ip() or hostname string() or binary()", [NameOrIP]),
     error({invalid, NameOrIP}).
 
 sanitize_netcfg(NetworkCfg) ->
