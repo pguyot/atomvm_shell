@@ -25,8 +25,10 @@ expand(ReverseStr, _Options) ->
     case string:split(ReverseStr, ":", all) of
         [ReverseStr] ->
             {no, [], []};
-        [FuncStr, ModuleStr] ->
+        [FuncStr, RestStr | _] ->
             try
+                [ModuleStr0 | _] = string:split(RestStr, " "),
+                [ModuleStr | _] = string:split(ModuleStr0, ","),
                 Module = list_to_atom(lists:reverse(ModuleStr)),
                 case code:ensure_loaded(Module) of
                     {module, Module} ->
