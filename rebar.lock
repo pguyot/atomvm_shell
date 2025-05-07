@@ -1,1 +1,8 @@
-[].
+[{<<"atomvm_m5">>,
+  {git,"https://github.com/pguyot/atomvm_m5.git",
+       {ref,"195b4299b0bc97477fd668eb3bf3d59dceb81b79"}},
+  0},
+ {<<"atomvm_neopixel">>,
+  {git,"https://github.com/atomvm/atomvm_neopixel.git",
+       {ref,"4eaea236ff36b5faf4027b4c25d2e26418b590ec"}},
+  0}].
